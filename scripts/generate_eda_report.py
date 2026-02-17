@@ -36,6 +36,46 @@ class EDAReportGenerator:
             "datasets": {},
             "insights": {},
             "recommendations": [],
+            "data_limitations": self._get_data_limitations(),
+        }
+
+    def _get_data_limitations(self) -> dict:
+        """
+        Document known data limitations.
+
+        These limitations should be considered when interpreting insights.
+        """
+        return {
+            "timestamp_limitations": {
+                "description": "Timestamp data lacks timezone information",
+                "details": [
+                    "All timestamps lack timezone designators (no UTC offset)",
+                    "Cannot determine if times are UTC, local, or mixed",
+                    "Viral dataset contains date-only data (all times 00:00:00)",
+                ],
+                "impact": "Hour-based insights may not reflect actual optimal posting times",
+                "recommendation": "Use day-of-week patterns (more reliable) over hour-based patterns",
+            },
+            "synthetic_data_indicators": {
+                "description": "Dataset shows characteristics of synthetic/generated data",
+                "details": [
+                    "Instagram: Nearly uniform hour distribution (1195-1283 posts per hour)",
+                    "Social Media: Perfect zero skewness (statistically unlikely in real data)",
+                    "Viral: All timestamps at 00:00:00 (date-only)",
+                ],
+                "impact": "Hour-based 'best time to post' insights should NOT be used for production decisions",
+                "recommendation": "For production systems, collect real data with explicit timezone handling",
+            },
+            "scale_variance": {
+                "description": "Engagement scales vary dramatically across datasets",
+                "details": [
+                    "Instagram: mean ~311 engagement",
+                    "Social Media: mean ~4,002 engagement (13x Instagram)",
+                    "Viral: mean ~320,053 engagement (1030x Instagram)",
+                ],
+                "impact": "Raw engagement values cannot be directly compared across datasets",
+                "recommendation": "Use log1p transformation for cross-dataset analysis and LSTM training",
+            },
         }
 
     def analyze_dataset(self, filename: str) -> dict:
@@ -259,12 +299,14 @@ class EDAReportGenerator:
                         "category": "Timing",
                         "insight": f"Peak engagement hour is {tp['hourly']['peak_hour']}:00 with {tp['hourly']['peak_hour_avg']} avg engagement",
                         "recommendation": f"Schedule posts around {tp['hourly']['peak_hour']}:00 for maximum reach",
+                        "caveat": "WARNING: Hour data lacks timezone info and shows uniform distribution (synthetic pattern). Use with caution.",
                     })
                 if "daily" in tp:
                     insights.append({
                         "category": "Timing",
                         "insight": f"Best day for engagement is {tp['daily']['best_day']}",
                         "recommendation": f"Prioritize posting on {tp['daily']['best_day']}",
+                        "caveat": "Day-of-week patterns are more reliable than hour-based patterns.",
                     })
 
             # Content insights
@@ -374,6 +416,20 @@ class EDAReportGenerator:
             if "content_analysis" in data and "best_content_type" in data["content_analysis"]:
                 print(f"  Best Content: {data['content_analysis']['best_content_type']}")
 
+        # Data Limitations Warning
+        print("\n" + "-"*60)
+        print("DATA LIMITATIONS")
+        print("-"*60)
+        limitations = self.report.get("data_limitations", {})
+        if "timestamp_limitations" in limitations:
+            print("\n[Timestamp Warning]")
+            print(f"  {limitations['timestamp_limitations']['description']}")
+            print(f"  Impact: {limitations['timestamp_limitations']['impact']}")
+        if "scale_variance" in limitations:
+            print("\n[Scale Variance]")
+            print(f"  {limitations['scale_variance']['description']}")
+            print(f"  Recommendation: {limitations['scale_variance']['recommendation']}")
+
         # Insights
         print("\n" + "-"*60)
         print("KEY INSIGHTS")
@@ -382,6 +438,8 @@ class EDAReportGenerator:
             print(f"\n[{insight['category']}]")
             print(f"  {insight['insight']}")
             print(f"  -> {insight['recommendation']}")
+            if "caveat" in insight:
+                print(f"  ** {insight['caveat']}")
 
         # Recommendations
         print("\n" + "-"*60)

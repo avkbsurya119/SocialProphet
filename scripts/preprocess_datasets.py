@@ -7,7 +7,18 @@ This script:
 3. Cleans and validates data
 4. Handles missing values
 5. Calculates engagement metrics
-6. Saves processed data
+6. Applies log transformation for scale normalization
+7. Saves processed data
+
+Log Transformation Rationale:
+    Cross-platform engagement scales vary by 1000x+:
+    - Instagram: mean ~311
+    - Social Media: mean ~4,002
+    - Viral: mean ~320,053
+
+    Without log transform, LSTM training will suffer from gradient
+    explosion due to extreme value differences. log1p reduces the
+    scale ratio from 1030x to ~2.4x.
 
 Usage:
     python scripts/preprocess_datasets.py
@@ -270,6 +281,26 @@ class DatasetProcessor:
 
         return df
 
+    def _apply_log_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply log1p transformation to engagement for LSTM training.
+
+        Preserves raw values in 'engagement_raw' column.
+        Transforms 'engagement' column using log1p.
+        """
+        df = df.copy()
+
+        if "engagement" in df.columns:
+            # Keep raw values for reference
+            df["engagement_raw"] = df["engagement"].copy()
+
+            # Apply log1p transform
+            df["engagement"] = np.log1p(df["engagement"])
+
+            print(f"  Log transform: raw=[{df['engagement_raw'].min():.0f}, {df['engagement_raw'].max():.0f}] -> log=[{df['engagement'].min():.2f}, {df['engagement'].max():.2f}]")
+
+        return df
+
     def combine_datasets(
         self,
         instagram_df: pd.DataFrame,
@@ -315,12 +346,26 @@ class DatasetProcessor:
         viral_df: pd.DataFrame,
         combined_df: pd.DataFrame
     ):
-        """Save all processed datasets."""
+        """Save all processed datasets with log transformation."""
         print("\n" + "="*60)
-        print("Saving processed datasets")
+        print("Applying log transformation and saving datasets")
         print("="*60)
 
+        # Apply log transform to each dataset
+        print("\nInstagram:")
+        instagram_df = self._apply_log_transform(instagram_df)
+
+        print("\nSocial Media:")
+        social_media_df = self._apply_log_transform(social_media_df)
+
+        print("\nViral:")
+        viral_df = self._apply_log_transform(viral_df)
+
+        print("\nCombined:")
+        combined_df = self._apply_log_transform(combined_df)
+
         # Save individual datasets
+        print("\nSaving files...")
         instagram_df.to_csv(self.processed_dir / "instagram_cleaned.csv", index=False)
         print(f"Saved: instagram_cleaned.csv ({len(instagram_df)} rows)")
 
@@ -332,6 +377,8 @@ class DatasetProcessor:
 
         combined_df.to_csv(self.processed_dir / "combined_data.csv", index=False)
         print(f"Saved: combined_data.csv ({len(combined_df)} rows)")
+
+        print("\nNote: 'engagement' is log-transformed, 'engagement_raw' contains original values")
 
     def run(self):
         """Run complete preprocessing pipeline."""

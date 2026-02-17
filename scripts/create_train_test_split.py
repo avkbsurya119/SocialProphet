@@ -2,11 +2,20 @@
 Create train-test split for time series forecasting.
 
 This script:
-1. Loads processed datasets
+1. Loads processed datasets (with log-transformed engagement)
 2. Creates temporal train-test split (80/20)
 3. Prepares Prophet-ready data format
-4. Saves train and test datasets
-5. Generates split summary
+4. Creates lag/rolling features on log-scale
+5. Saves train and test datasets
+6. Generates split summary
+
+Log-Scale Processing:
+    Input data has log-transformed engagement (from preprocess_datasets.py).
+    All features (lag, rolling mean/std) are computed on log-scale.
+    This ensures LSTM receives normalized features.
+
+    Target variable 'y' is log-transformed.
+    'y_raw' contains original values for evaluation/visualization.
 
 Usage:
     python scripts/create_train_test_split.py
@@ -47,20 +56,28 @@ class TrainTestSplitter:
         """
         Aggregate data to daily level for time series forecasting.
 
+        Uses engagement_raw for aggregation (sum of raw values),
+        then applies log transform to daily totals.
+
         Args:
-            df: Raw dataframe with individual posts
+            df: Dataframe with engagement_raw (original) and engagement (log)
 
         Returns:
-            Daily aggregated dataframe
+            Daily aggregated dataframe with y (log) and y_raw (original)
         """
         print("\nAggregating to daily level...")
+
+        # Determine which column to use for aggregation
+        # Use engagement_raw if available (raw values), else use engagement
+        eng_col = "engagement_raw" if "engagement_raw" in df.columns else "engagement"
+        print(f"  Using '{eng_col}' for daily aggregation")
 
         # Set timestamp as index
         df = df.set_index("timestamp")
 
-        # Daily aggregations
+        # Daily aggregations (use raw values for sum)
         daily = df.resample("D").agg({
-            "engagement": ["sum", "mean", "count"],
+            eng_col: ["sum", "mean", "count"],
             "likes": "sum",
             "comments": "sum",
             "shares": "sum",
@@ -76,16 +93,25 @@ class TrainTestSplitter:
         daily = daily.reset_index()
         daily = daily.rename(columns={"timestamp": "ds"})
 
-        # Use engagement_sum as primary target (y)
-        daily["y"] = daily["engagement_sum"]
+        # Keep raw engagement sum
+        daily["y_raw"] = daily["engagement_sum"]
+
+        # Apply log transform for LSTM training
+        daily["y"] = np.log1p(daily["engagement_sum"])
 
         # Fill missing days with 0 (if any gaps)
         date_range = pd.date_range(start=daily["ds"].min(), end=daily["ds"].max(), freq="D")
         daily = daily.set_index("ds").reindex(date_range, fill_value=0).reset_index()
         daily = daily.rename(columns={"index": "ds"})
 
+        # Ensure y_raw and y are filled for missing days
+        daily["y_raw"] = daily["y_raw"].fillna(0)
+        daily["y"] = daily["y"].fillna(0)
+
         print(f"  Daily records: {len(daily)}")
         print(f"  Date range: {daily['ds'].min()} to {daily['ds'].max()}")
+        print(f"  y (log) range: [{daily['y'].min():.2f}, {daily['y'].max():.2f}]")
+        print(f"  y_raw range: [{daily['y_raw'].min():.0f}, {daily['y_raw'].max():.0f}]")
 
         return daily
 
@@ -196,24 +222,35 @@ class TrainTestSplitter:
         summary = {
             "created_at": datetime.now().isoformat(),
             "split_ratio": self.split_ratio,
+            "log_transform_applied": True,
             "train": {
                 "rows": len(train_df),
                 "start_date": str(train_df["ds"].min()),
                 "end_date": str(train_df["ds"].max()),
                 "days": len(train_df),
-                "y_mean": round(train_df["y"].mean(), 2),
-                "y_std": round(train_df["y"].std(), 2),
+                "y_mean_log": round(train_df["y"].mean(), 2),
+                "y_std_log": round(train_df["y"].std(), 2),
+                "y_raw_mean": round(train_df["y_raw"].mean(), 2) if "y_raw" in train_df.columns else None,
+                "y_raw_std": round(train_df["y_raw"].std(), 2) if "y_raw" in train_df.columns else None,
             },
             "test": {
                 "rows": len(test_df),
                 "start_date": str(test_df["ds"].min()),
                 "end_date": str(test_df["ds"].max()),
                 "days": len(test_df),
-                "y_mean": round(test_df["y"].mean(), 2),
-                "y_std": round(test_df["y"].std(), 2),
+                "y_mean_log": round(test_df["y"].mean(), 2),
+                "y_std_log": round(test_df["y"].std(), 2),
+                "y_raw_mean": round(test_df["y_raw"].mean(), 2) if "y_raw" in test_df.columns else None,
+                "y_raw_std": round(test_df["y_raw"].std(), 2) if "y_raw" in test_df.columns else None,
             },
             "features": list(train_df.columns),
-            "target": "y (daily engagement sum)",
+            "target": "y (log-transformed daily engagement sum)",
+            "target_raw": "y_raw (original scale daily engagement sum)",
+            "notes": [
+                "y is log1p transformed for LSTM training stability",
+                "Use np.expm1(y) to convert predictions back to original scale",
+                "All lag and rolling features are computed on log scale",
+            ],
         }
 
         # Save summary
@@ -262,15 +299,23 @@ class TrainTestSplitter:
         print("\n" + "="*60)
         print("TRAIN-TEST SPLIT SUMMARY")
         print("="*60)
+        print(f"\nLog Transformation: APPLIED")
+        print(f"  - y: log1p(engagement) for LSTM training")
+        print(f"  - y_raw: original scale for evaluation")
+
         print(f"\nTrain Set:")
         print(f"  Period: {summary['train']['start_date'][:10]} to {summary['train']['end_date'][:10]}")
         print(f"  Days: {summary['train']['days']}")
-        print(f"  Mean Daily Engagement: {summary['train']['y_mean']:,.0f}")
+        print(f"  Mean (log): {summary['train']['y_mean_log']:.2f}")
+        if summary['train']['y_raw_mean']:
+            print(f"  Mean (raw): {summary['train']['y_raw_mean']:,.0f}")
 
         print(f"\nTest Set:")
         print(f"  Period: {summary['test']['start_date'][:10]} to {summary['test']['end_date'][:10]}")
         print(f"  Days: {summary['test']['days']}")
-        print(f"  Mean Daily Engagement: {summary['test']['y_mean']:,.0f}")
+        print(f"  Mean (log): {summary['test']['y_mean_log']:.2f}")
+        if summary['test']['y_raw_mean']:
+            print(f"  Mean (raw): {summary['test']['y_raw_mean']:,.0f}")
 
         print(f"\nFeatures Created: {len(summary['features'])}")
         print(f"Target Variable: {summary['target']}")
