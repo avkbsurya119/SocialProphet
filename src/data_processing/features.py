@@ -2,6 +2,19 @@
 Feature Engineering Module for SocialProphet.
 
 Creates temporal, content, and historical features for forecasting.
+
+Log-Scale Feature Engineering:
+    When engagement values are log-transformed (recommended for LSTM),
+    all derived features (lag, rolling mean/std, ROC) will also be in
+    log-scale. This is intentional and correct:
+
+    - y_lag_1, y_lag_7: Log-scale lag values
+    - y_rolling_mean_7: Mean of log values (geometric mean relationship)
+    - y_rolling_std_7: Std of log values (measures relative variation)
+    - y_roc_1: Percent change of log values (approximate log returns)
+
+    This ensures all features fed to LSTM have similar magnitudes,
+    preventing any single feature from dominating the learning.
 """
 
 import pandas as pd
@@ -290,7 +303,11 @@ class FeatureEngineer:
             List of feature column names
         """
         if exclude is None:
-            exclude = ["timestamp", "ds", "y", "text", "engagement"]
+            # Exclude target, raw values, and non-feature columns
+            exclude = [
+                "timestamp", "ds", "y", "y_raw",
+                "text", "engagement", "engagement_raw"
+            ]
 
         feature_cols = [c for c in df.columns if c not in exclude]
         return feature_cols
