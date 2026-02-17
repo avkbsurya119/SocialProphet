@@ -2,6 +2,16 @@
 Data Preprocessing Module for SocialProphet.
 
 Handles data cleaning, validation, and transformation.
+
+Scale Normalization Note:
+    Cross-platform engagement scales vary significantly:
+    - Instagram: mean ~311
+    - Social Media: mean ~4,002
+    - Viral: mean ~320,053 (1030x difference from Instagram!)
+
+    Log transformation is applied to normalize these scales for LSTM training.
+    Without log transform, the 1030x scale difference causes gradient explosion.
+    With log1p transform, the ratio reduces to ~2.4x (manageable for neural networks).
 """
 
 import pandas as pd
@@ -289,3 +299,62 @@ class DataPreprocessor:
         validation["stats"]["total_rows"] = len(df)
 
         return validation
+
+    def apply_log_transform(
+        self,
+        df: pd.DataFrame,
+        column: str = "engagement",
+        keep_raw: bool = True
+    ) -> pd.DataFrame:
+        """
+        Apply log1p transformation for LSTM training stability.
+
+        Log transformation is essential when combining datasets with vastly
+        different engagement scales. This prevents gradient explosion during
+        neural network training.
+
+        Scale ratios BEFORE log transform:
+            Viral/Instagram: 1030x
+            Viral/Social: 80x
+
+        Scale ratios AFTER log transform:
+            Max ratio: ~2.4x (safe for LSTM)
+
+        Args:
+            df: DataFrame with engagement column
+            column: Column to transform (default: "engagement")
+            keep_raw: If True, keeps original values in {column}_raw
+
+        Returns:
+            DataFrame with log-transformed engagement
+        """
+        df = df.copy()
+
+        if column not in df.columns:
+            raise ValueError(f"Column '{column}' not found in DataFrame")
+
+        if keep_raw:
+            df[f"{column}_raw"] = df[column].copy()
+
+        # Apply log1p to handle zero values (log1p(0) = 0)
+        df[column] = np.log1p(df[column])
+
+        print(f"Log transform applied to '{column}':")
+        print(f"  Raw range: [{df[f'{column}_raw'].min():.0f}, {df[f'{column}_raw'].max():.0f}]")
+        print(f"  Log range: [{df[column].min():.2f}, {df[column].max():.2f}]")
+
+        return df
+
+    def inverse_log_transform(self, values: np.ndarray) -> np.ndarray:
+        """
+        Convert log-transformed predictions back to original scale.
+
+        Use this after model predictions to get interpretable engagement values.
+
+        Args:
+            values: Log-transformed values (predictions or actuals)
+
+        Returns:
+            Original scale values
+        """
+        return np.expm1(values)
