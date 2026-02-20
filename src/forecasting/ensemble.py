@@ -75,7 +75,14 @@ class EnsembleForecaster:
         self.models[name] = model
         if weight is not None:
             self.weights[name] = weight
-        self.available_models.append(name)
+        if name not in self.available_models:
+            self.available_models.append(name)
+
+        # Mark ensemble as fitted if adding a fitted model
+        if hasattr(model, 'is_fitted') and model.is_fitted:
+            self.is_fitted = True
+            self._normalize_weights()
+
         print(f"Added {name} model to ensemble (weight: {self.weights.get(name, 0)})")
 
     def fit_all(
