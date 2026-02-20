@@ -514,10 +514,19 @@ class Visualizer:
 
         # 2. Model Comparison (top right)
         ax2 = fig.add_subplot(gs[0, 1])
-        models = list(results.get('models', {}).keys()) + ['ensemble']
-        mape_values = [results['models'][m]['mape'] for m in results.get('models', {})] + [results['ensemble']['mape']]
 
-        colors = [self.colors.get(m, '#808080') for m in models]
+        # Handle different results formats
+        if 'metrics_original_scale' in results:
+            # Format from ForecastMetrics.evaluate()
+            ensemble_metrics = results['metrics_original_scale']
+            models = ['Ensemble']
+            mape_values = [ensemble_metrics['mape']]
+        else:
+            # Legacy format with 'models' and 'ensemble' keys
+            models = list(results.get('models', {}).keys()) + ['ensemble']
+            mape_values = [results['models'][m]['mape'] for m in results.get('models', {})] + [results['ensemble']['mape']]
+
+        colors = [self.colors.get(m.lower(), '#808080') for m in models]
         bars = ax2.bar(models, mape_values, color=colors, alpha=0.8)
         ax2.axhline(y=15, color='red', linestyle='--', label='Threshold (15%)')
         ax2.set_title('Model MAPE Comparison')
@@ -539,16 +548,28 @@ class Visualizer:
         ax4 = fig.add_subplot(gs[1, 1])
         ax4.axis('off')
 
+        # Handle different results formats
+        if 'metrics_original_scale' in results:
+            ensemble_metrics = results['metrics_original_scale']
+            pass_fail = results.get('pass_fail', {})
+        else:
+            ensemble_metrics = results.get('ensemble', {})
+            pass_fail = {
+                'mape': ensemble_metrics.get('mape', 100) < 15,
+                'r2': ensemble_metrics.get('r2', 0) > 0.70
+            }
+
         metrics_text = []
         metrics_text.append("EVALUATION SUMMARY")
         metrics_text.append("=" * 30)
         metrics_text.append(f"\nEnsemble Metrics:")
-        for metric, value in results['ensemble'].items():
-            metrics_text.append(f"  {metric.upper()}: {value:.4f}")
+        for metric, value in ensemble_metrics.items():
+            if isinstance(value, (int, float)):
+                metrics_text.append(f"  {metric.upper()}: {value:.4f}")
 
         metrics_text.append(f"\nThreshold Check:")
-        metrics_text.append(f"  MAPE < 15%: {'PASS' if results['ensemble']['mape'] < 15 else 'FAIL'}")
-        metrics_text.append(f"  R² > 0.70: {'PASS' if results['ensemble']['r2'] > 0.70 else 'FAIL'}")
+        metrics_text.append(f"  MAPE < 15%: {'PASS' if pass_fail.get('mape', False) else 'FAIL'}")
+        metrics_text.append(f"  R² > 0.70: {'PASS' if pass_fail.get('r2', False) else 'FAIL'}")
 
         ax4.text(0.1, 0.9, '\n'.join(metrics_text), transform=ax4.transAxes,
                 fontsize=11, verticalalignment='top', fontfamily='monospace',
