@@ -353,6 +353,10 @@ class Visualizer:
 
         fig, ax = plt.subplots(figsize=figsize)
 
+        # Handle both Keras History object and plain dict
+        if hasattr(history, 'history'):
+            history = history.history
+
         epochs = range(1, len(history['loss']) + 1)
 
         ax.plot(epochs, history['loss'], label='Training Loss', color=self.colors['actual'])
