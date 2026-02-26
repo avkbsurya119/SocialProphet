@@ -401,11 +401,13 @@ class FIITValidator:
         numbers = re.findall(r'\d+%?', content)
         details['has_numbers'] = len(numbers) > 0
 
-        # Value indicators
+        # Value indicators (expanded for social media)
         value_patterns = [
-            r'\b(tip|trick|hack|secret|guide|how to|steps|ways|reasons|benefits|learn|discover)\b',
-            r'\b(save|free|bonus|exclusive|new|best|top|ultimate|complete)\b',
-            r'\b(results|success|growth|improvement|increase|boost)\b'
+            r'\b(tip|tips|trick|tricks|hack|hacks|secret|secrets|guide|how to|steps|ways|reasons|benefits|learn|discover)\b',
+            r'\b(save|free|bonus|exclusive|new|best|top|ultimate|complete|proven|simple|easy)\b',
+            r'\b(results|success|growth|improvement|increase|boost|unlock|achieve|transform)\b',
+            r'\b(did you know|here\'s|here are|check out|introducing|announcing)\b',
+            r'\b(strategy|strategies|method|methods|technique|techniques|advice|insight|insights)\b'
         ]
 
         value_matches = []
@@ -449,22 +451,29 @@ class FIITValidator:
         # Calculate overall score
         score = 0.0
 
-        # Content density (30%)
-        score += min(0.3, details['content_density'] * 0.5)
+        # Content density (20%)
+        score += min(0.2, details['content_density'] * 0.4)
 
-        # Value indicators (30%)
+        # Value indicators (35%) - most important for social media
         if details['has_value_indicators']:
-            score += 0.3
+            # Bonus for multiple value indicators
+            value_count = len(details.get('value_indicators', []))
+            if value_count >= 3:
+                score += 0.35
+            elif value_count >= 2:
+                score += 0.30
+            else:
+                score += 0.25
 
-        # Numbers/statistics (20%)
+        # Numbers/statistics (25%)
         if details['has_numbers']:
-            score += 0.2
+            score += 0.25
 
         # Relevance to insights (20%)
         if insights:
             score += details['relevance_score'] * 0.2
         else:
-            score += 0.1  # Base score without insights
+            score += 0.15  # Higher base score without insights
 
         return min(1.0, score), details
 

@@ -176,18 +176,24 @@ ENGAGEMENT INSIGHTS:
 REQUIREMENTS:
 1. Write a caption optimized for {self.platform} (max {self.config['optimal_caption_length']} characters)
 2. Include {self.config['optimal_hashtags']} relevant hashtags
-3. Add a clear call-to-action
-4. Use appropriate emojis (2-4)
+3. Add a clear call-to-action (e.g., "Comment below", "Share with a friend", "Click link in bio")
+4. Use 2-4 relevant emojis
 5. Match the brand voice: {self.brand_voice}
 
+CRITICAL FOR HIGH FIIT SCORE:
+- Include at least ONE specific statistic or number (e.g., "85% of users...", "5 tips to...", "increased by 30%")
+- Ask a direct question to the audience (ending with ?)
+- Use value words: tips, secrets, hack, guide, steps, ways, reasons, benefits, learn, discover
+- Include a clear CTA phrase: comment, share, follow, click, tap, check out, save this
+
 FIIT FRAMEWORK:
-- Fluency: Natural, easy-to-read language
-- Interactivity: Include question or CTA to drive engagement
-- Information: Provide value to the audience
-- Tone: Consistent with brand voice
+- Fluency: Natural, easy-to-read language with short sentences
+- Interactivity: Include BOTH a question AND a CTA
+- Information: Include statistics, tips, or actionable advice
+- Tone: Positive and engaging (aim for sentiment 0.2-0.5)
 
 Please provide:
-1. CAPTION: [Your caption here]
+1. CAPTION: [Your engaging caption with stats, question, and CTA]
 2. HASHTAGS: [Your hashtags here]
 3. BEST TIME TO POST: [Recommended time based on insights]
 4. CONTENT TYPE: [Suggested content type - image/video/carousel]
