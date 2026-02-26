@@ -2,17 +2,16 @@
 HuggingFace LLM Client for SocialProphet.
 
 Provides interface to HuggingFace Inference API for content generation
-using Llama 3.1, Mistral, or GPT-2 fallback.
+using available models via chat_completion.
 """
 
 import os
 import time
-import json
-import requests
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 from pathlib import Path
-from functools import wraps
 from datetime import datetime, timedelta
+
+from huggingface_hub import InferenceClient
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -37,14 +36,12 @@ class RateLimiter:
     def wait_if_needed(self):
         """Wait if rate limit would be exceeded."""
         now = datetime.now()
-        # Remove old requests outside the window
         self.requests = [
             r for r in self.requests
             if now - r < timedelta(seconds=self.window_seconds)
         ]
 
         if len(self.requests) >= self.max_requests:
-            # Wait until oldest request expires
             oldest = min(self.requests)
             wait_time = (oldest + timedelta(seconds=self.window_seconds) - now).total_seconds()
             if wait_time > 0:
@@ -58,34 +55,30 @@ class HuggingFaceClient:
     """
     Client for HuggingFace Inference API.
 
-    Supports:
-    - Llama 3.1 8B Instruct (primary)
-    - Mistral 7B Instruct (backup)
-    - GPT-2 (fallback)
+    Uses huggingface_hub InferenceClient with chat_completion.
     """
 
-    # Model options (in order of preference)
+    # Model options (currently available on free tier)
     MODELS = {
-        'llama': 'meta-llama/Meta-Llama-3.1-8B-Instruct',
-        'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
-        'gpt2': 'gpt2-large',
+        'llama': 'meta-llama/Llama-3.2-1B-Instruct',
+        'llama3b': 'meta-llama/Llama-3.2-3B-Instruct',
+        'qwen': 'Qwen/Qwen2.5-Coder-32B-Instruct',
+        'phi': 'microsoft/Phi-3.5-mini-instruct',
     }
-
-    API_URL = "https://api-inference.huggingface.co/models/{model}"
 
     def __init__(
         self,
         token: Optional[str] = None,
         model: str = 'llama',
         max_retries: int = 3,
-        timeout: int = 60
+        timeout: int = 120
     ):
         """
         Initialize HuggingFace client.
 
         Args:
             token: HuggingFace API token (uses HF_TOKEN env var if not provided)
-            model: Model to use ('llama', 'mistral', 'gpt2')
+            model: Model to use ('llama', 'llama3b', 'qwen', 'phi')
             max_retries: Maximum retry attempts
             timeout: Request timeout in seconds
         """
@@ -102,83 +95,14 @@ class HuggingFaceClient:
         self.timeout = timeout
         self.rate_limiter = RateLimiter(max_requests=30, window_seconds=60)
 
+        # Initialize InferenceClient
+        self.client = InferenceClient(token=self.token)
+
         # Cache for responses
         self._cache = {}
         self._cache_ttl = 3600  # 1 hour
 
-        # Headers
-        self.headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
-        }
-
         print(f"HuggingFace client initialized with model: {self.model_name}")
-
-    def _get_api_url(self, model_name: Optional[str] = None) -> str:
-        """Get API URL for model."""
-        model = model_name or self.model_name
-        return self.API_URL.format(model=model)
-
-    def _make_request(
-        self,
-        payload: Dict[str, Any],
-        model_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Make request to HuggingFace API with retry logic.
-
-        Args:
-            payload: Request payload
-            model_name: Optional model override
-
-        Returns:
-            API response
-        """
-        url = self._get_api_url(model_name)
-
-        for attempt in range(self.max_retries):
-            try:
-                self.rate_limiter.wait_if_needed()
-
-                response = requests.post(
-                    url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.timeout
-                )
-
-                # Handle specific error codes
-                if response.status_code == 503:
-                    # Model is loading
-                    data = response.json()
-                    wait_time = data.get('estimated_time', 20)
-                    print(f"Model loading... waiting {wait_time}s")
-                    time.sleep(min(wait_time, 60))
-                    continue
-
-                if response.status_code == 429:
-                    # Rate limited
-                    wait_time = int(response.headers.get('Retry-After', 60))
-                    print(f"Rate limited. Waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-
-                response.raise_for_status()
-                return response.json()
-
-            except requests.exceptions.Timeout:
-                print(f"Request timeout (attempt {attempt + 1}/{self.max_retries})")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)
-                continue
-
-            except requests.exceptions.RequestException as e:
-                print(f"Request error: {e}")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)
-                continue
-
-        raise RuntimeError(f"Failed after {self.max_retries} attempts")
 
     def generate(
         self,
@@ -190,7 +114,7 @@ class HuggingFaceClient:
         use_cache: bool = True
     ) -> str:
         """
-        Generate text from prompt.
+        Generate text from prompt using chat_completion.
 
         Args:
             prompt: Input prompt
@@ -210,42 +134,42 @@ class HuggingFaceClient:
             if time.time() - cached['time'] < self._cache_ttl:
                 return cached['response']
 
-        # Build payload
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "do_sample": do_sample,
-                "return_full_text": False
-            }
-        }
+        # Build messages for chat completion
+        messages = [
+            {"role": "user", "content": prompt}
+        ]
 
-        try:
-            response = self._make_request(payload)
+        for attempt in range(self.max_retries):
+            try:
+                self.rate_limiter.wait_if_needed()
 
-            # Parse response
-            if isinstance(response, list) and len(response) > 0:
-                generated = response[0].get('generated_text', '')
-            elif isinstance(response, dict):
-                generated = response.get('generated_text', str(response))
-            else:
-                generated = str(response)
+                response = self.client.chat_completion(
+                    messages=messages,
+                    model=self.model_name,
+                    max_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
 
-            # Cache response
-            if use_cache:
-                self._cache[cache_key] = {
-                    'response': generated,
-                    'time': time.time()
-                }
+                generated = response.choices[0].message.content
 
-            return generated
+                # Cache response
+                if use_cache:
+                    self._cache[cache_key] = {
+                        'response': generated,
+                        'time': time.time()
+                    }
 
-        except Exception as e:
-            print(f"Generation error with {self.model_name}: {e}")
-            # Try fallback model
-            return self._fallback_generate(prompt, max_new_tokens, temperature)
+                return generated
+
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{self.max_retries} failed: {str(e)[:80]}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2 ** attempt)
+                continue
+
+        # Try fallback models
+        return self._fallback_generate(prompt, max_new_tokens, temperature)
 
     def _fallback_generate(
         self,
@@ -264,37 +188,35 @@ class HuggingFaceClient:
         Returns:
             Generated text or error message
         """
-        fallback_order = ['mistral', 'gpt2']
+        fallback_models = ['llama3b', 'qwen', 'phi']
 
-        for model_key in fallback_order:
+        for model_key in fallback_models:
             if model_key == self.model_key:
                 continue
 
-            model_name = self.MODELS[model_key]
-            print(f"Trying fallback model: {model_name}")
-
-            payload = {
-                "inputs": prompt,
-                "parameters": {
-                    "max_new_tokens": min(max_new_tokens, 250),  # Reduce for fallback
-                    "temperature": temperature,
-                    "do_sample": True
-                }
-            }
-
-            try:
-                response = self._make_request(payload, model_name)
-
-                if isinstance(response, list) and len(response) > 0:
-                    return response[0].get('generated_text', '')
-                elif isinstance(response, dict):
-                    return response.get('generated_text', '')
-
-            except Exception as e:
-                print(f"Fallback {model_key} failed: {e}")
+            model_name = self.MODELS.get(model_key)
+            if not model_name:
                 continue
 
-        return "[Error: All models failed to generate response]"
+            print(f"Trying fallback model: {model_name}")
+
+            try:
+                messages = [{"role": "user", "content": prompt}]
+
+                response = self.client.chat_completion(
+                    messages=messages,
+                    model=model_name,
+                    max_tokens=min(max_new_tokens, 300),
+                    temperature=temperature,
+                )
+
+                return response.choices[0].message.content
+
+            except Exception as e:
+                print(f"Fallback {model_key} failed: {str(e)[:60]}")
+                continue
+
+        return "[Error: All models failed to generate response. Please try again later.]"
 
     def generate_batch(
         self,
@@ -316,7 +238,6 @@ class HuggingFaceClient:
             print(f"Generating {i+1}/{len(prompts)}...")
             result = self.generate(prompt, **kwargs)
             results.append(result)
-            # Small delay between requests
             time.sleep(0.5)
         return results
 
@@ -337,24 +258,35 @@ class HuggingFaceClient:
         Returns:
             Generated response
         """
-        # Format as chat prompt for Llama/Mistral
-        formatted_prompt = ""
+        chat_messages = []
 
         if system_prompt:
-            formatted_prompt += f"<|system|>\n{system_prompt}\n"
+            chat_messages.append({"role": "system", "content": system_prompt})
 
-        for msg in messages:
-            role = msg.get('role', 'user')
-            content = msg.get('content', '')
+        chat_messages.extend(messages)
 
-            if role == 'user':
-                formatted_prompt += f"<|user|>\n{content}\n"
-            elif role == 'assistant':
-                formatted_prompt += f"<|assistant|>\n{content}\n"
+        max_tokens = kwargs.get('max_new_tokens', 500)
+        temperature = kwargs.get('temperature', 0.7)
 
-        formatted_prompt += "<|assistant|>\n"
+        for attempt in range(self.max_retries):
+            try:
+                self.rate_limiter.wait_if_needed()
 
-        return self.generate(formatted_prompt, **kwargs)
+                response = self.client.chat_completion(
+                    messages=chat_messages,
+                    model=self.model_name,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+
+                return response.choices[0].message.content
+
+            except Exception as e:
+                print(f"Chat attempt {attempt + 1} failed: {str(e)[:60]}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2 ** attempt)
+
+        return "[Error: Failed to generate chat response]"
 
     def check_model_status(self) -> Dict[str, Any]:
         """
@@ -363,17 +295,18 @@ class HuggingFaceClient:
         Returns:
             Status dictionary
         """
-        url = self._get_api_url()
-
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            data = response.json()
+            # Try a simple generation
+            response = self.client.chat_completion(
+                messages=[{"role": "user", "content": "Hi"}],
+                model=self.model_name,
+                max_tokens=5,
+            )
 
             return {
-                'available': response.status_code == 200,
+                'available': True,
                 'model': self.model_name,
-                'status_code': response.status_code,
-                'details': data
+                'test_response': response.choices[0].message.content
             }
         except Exception as e:
             return {
@@ -387,7 +320,7 @@ class HuggingFaceClient:
         Switch to a different model.
 
         Args:
-            model: Model key ('llama', 'mistral', 'gpt2')
+            model: Model key ('llama', 'llama3b', 'qwen', 'phi')
         """
         if model not in self.MODELS:
             raise ValueError(f"Unknown model: {model}. Choose from: {list(self.MODELS.keys())}")
@@ -419,6 +352,9 @@ class HuggingFaceClient:
 def test_client():
     """Test the HuggingFace client."""
     try:
+        from dotenv import load_dotenv
+        load_dotenv()
+
         client = HuggingFaceClient()
 
         print("\nChecking model status...")

@@ -308,9 +308,9 @@ class TestHuggingFaceClient:
     def test_switch_model(self):
         """Test model switching."""
         client = HuggingFaceClient()
-        client.switch_model('mistral')
-        assert client.model_key == 'mistral'
-        assert 'mistral' in client.model_name.lower()
+        client.switch_model('qwen')
+        assert client.model_key == 'qwen'
+        assert 'qwen' in client.model_name.lower()
 
     @patch.dict('os.environ', {'HF_TOKEN': 'test_token'})
     def test_get_usage_stats(self):
