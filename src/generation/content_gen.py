@@ -67,12 +67,13 @@ class ContentGenerator:
 
         full_prompt = f"{system_prompt}\n\n{post_prompt}"
 
-        # Generate content
+        # Generate content (disable cache for variety)
         print("Generating post content...")
         raw_response = self.llm.generate(
             full_prompt,
             max_new_tokens=max_tokens,
-            temperature=0.7
+            temperature=0.8,  # Higher for more variety
+            use_cache=False   # Disable cache for unique posts
         )
 
         # Parse response
@@ -281,7 +282,23 @@ class ContentGenerator:
 
         lines = response.split('\n')
 
-        # Collect multi-line caption
+        # First, try to find "EXAMPLE POST" section - it's usually better
+        example_caption = self._extract_example_post(response)
+        if example_caption and len(example_caption) > 100:
+            result['caption'] = example_caption
+            result['hashtags'] = self._extract_hashtags(example_caption)
+            # Still try to get best time and content type
+            for line in lines:
+                line_stripped = line.strip()
+                if 'BEST TIME' in line_stripped.upper() or 'TIME TO POST' in line_stripped.upper():
+                    if ':' in line_stripped:
+                        result['best_time'] = line_stripped.split(':', 1)[-1].strip()
+                elif 'CONTENT TYPE' in line_stripped.upper():
+                    if ':' in line_stripped:
+                        result['content_type'] = line_stripped.split(':', 1)[-1].strip()
+            return result
+
+        # Fallback: collect multi-line caption from CAPTION section
         caption_lines = []
         current_section = None
 
@@ -292,7 +309,6 @@ class ContentGenerator:
             # Detect section headers
             if 'CAPTION:' in line_upper or line_stripped.startswith('**Caption'):
                 current_section = 'caption'
-                # Check if content is on same line after colon
                 if ':' in line_stripped:
                     content = line_stripped.split(':', 1)[-1].strip()
                     content = content.strip('*').strip('"').strip()
@@ -323,14 +339,11 @@ class ContentGenerator:
 
             # Collect content for current section
             if current_section == 'caption' and line_stripped:
-                # Stop caption at next section or empty line after content
                 if line_stripped.startswith('**') and ':' in line_stripped:
                     current_section = None
                 elif line_stripped.startswith('#') and len(caption_lines) > 0:
-                    # Hashtags in caption - extract them
                     result['hashtags'].extend(self._extract_hashtags(line_stripped))
                 else:
-                    # Clean the line
                     clean_line = line_stripped.strip('"').strip('*').strip()
                     if clean_line and not clean_line.startswith('**'):
                         caption_lines.append(clean_line)
@@ -344,24 +357,45 @@ class ContentGenerator:
         # Join caption lines
         if caption_lines:
             result['caption'] = ' '.join(caption_lines)
-            # Clean up the caption
             result['caption'] = result['caption'].replace('  ', ' ').strip()
 
         # Extract hashtags from full response if none found
         if not result['hashtags']:
             result['hashtags'] = self._extract_hashtags(response)
 
-        # Fallback: extract caption from response
-        if not result['caption'] or len(result['caption']) < 20:
-            # Look for quoted content or substantial text
-            for line in lines:
-                line = line.strip().strip('"').strip('*')
-                if len(line) > 50 and not line.startswith('#') and not line.startswith('**'):
-                    if 'caption' not in line.lower() and 'hashtag' not in line.lower():
-                        result['caption'] = line
+        return result
+
+    def _extract_example_post(self, response: str) -> str:
+        """Extract content from EXAMPLE POST section if present."""
+        lines = response.split('\n')
+        example_lines = []
+        in_example = False
+
+        for line in lines:
+            line_stripped = line.strip()
+
+            if 'EXAMPLE POST' in line_stripped.upper():
+                in_example = True
+                continue
+
+            if in_example:
+                # Stop at next major section
+                if line_stripped.startswith('**') and ':' in line_stripped:
+                    if 'TONE' in line_stripped.upper() or 'IMAGE' in line_stripped.upper():
                         break
 
-        return result
+                # Skip empty lines at start
+                if not example_lines and not line_stripped:
+                    continue
+
+                # Clean and add line
+                clean = line_stripped.strip('"').strip()
+                if clean:
+                    example_lines.append(clean)
+
+        if example_lines:
+            return '\n'.join(example_lines)
+        return ''
 
     def _parse_campaign_response(
         self,
