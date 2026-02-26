@@ -281,46 +281,85 @@ class ContentGenerator:
 
         lines = response.split('\n')
 
+        # Collect multi-line caption
+        caption_lines = []
         current_section = None
-        for line in lines:
-            line = line.strip()
 
-            if 'CAPTION:' in line.upper():
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            line_upper = line_stripped.upper()
+
+            # Detect section headers
+            if 'CAPTION:' in line_upper or line_stripped.startswith('**Caption'):
                 current_section = 'caption'
-                # Extract inline content
-                content = line.split(':', 1)[-1].strip()
-                if content:
-                    result['caption'] = content
-            elif 'HASHTAGS:' in line.upper():
+                # Check if content is on same line after colon
+                if ':' in line_stripped:
+                    content = line_stripped.split(':', 1)[-1].strip()
+                    content = content.strip('*').strip('"').strip()
+                    if content and len(content) > 5:
+                        caption_lines.append(content)
+                continue
+
+            elif 'HASHTAGS:' in line_upper or line_stripped.startswith('**Hashtags'):
                 current_section = 'hashtags'
-                content = line.split(':', 1)[-1].strip()
+                content = line_stripped.split(':', 1)[-1].strip() if ':' in line_stripped else ''
                 if content:
                     result['hashtags'] = self._extract_hashtags(content)
-            elif 'BEST TIME' in line.upper() or 'TIME TO POST' in line.upper():
+                continue
+
+            elif 'BEST TIME' in line_upper or 'TIME TO POST' in line_upper:
                 current_section = 'time'
-                content = line.split(':', 1)[-1].strip()
+                content = line_stripped.split(':', 1)[-1].strip() if ':' in line_stripped else ''
                 if content:
                     result['best_time'] = content
-            elif 'CONTENT TYPE' in line.upper():
+                continue
+
+            elif 'CONTENT TYPE' in line_upper:
                 current_section = 'type'
-                content = line.split(':', 1)[-1].strip()
+                content = line_stripped.split(':', 1)[-1].strip() if ':' in line_stripped else ''
                 if content:
                     result['content_type'] = content
-            elif line and current_section:
-                # Continue previous section
-                if current_section == 'caption' and not result['caption']:
-                    result['caption'] = line
-                elif current_section == 'hashtags' and not result['hashtags']:
-                    result['hashtags'] = self._extract_hashtags(line)
+                continue
 
-        # Fallback: try to extract caption from full response
-        if not result['caption']:
-            # Look for quoted text or first substantial line
+            # Collect content for current section
+            if current_section == 'caption' and line_stripped:
+                # Stop caption at next section or empty line after content
+                if line_stripped.startswith('**') and ':' in line_stripped:
+                    current_section = None
+                elif line_stripped.startswith('#') and len(caption_lines) > 0:
+                    # Hashtags in caption - extract them
+                    result['hashtags'].extend(self._extract_hashtags(line_stripped))
+                else:
+                    # Clean the line
+                    clean_line = line_stripped.strip('"').strip('*').strip()
+                    if clean_line and not clean_line.startswith('**'):
+                        caption_lines.append(clean_line)
+
+            elif current_section == 'hashtags' and line_stripped:
+                if line_stripped.startswith('#'):
+                    result['hashtags'].extend(self._extract_hashtags(line_stripped))
+                elif line_stripped.startswith('**'):
+                    current_section = None
+
+        # Join caption lines
+        if caption_lines:
+            result['caption'] = ' '.join(caption_lines)
+            # Clean up the caption
+            result['caption'] = result['caption'].replace('  ', ' ').strip()
+
+        # Extract hashtags from full response if none found
+        if not result['hashtags']:
+            result['hashtags'] = self._extract_hashtags(response)
+
+        # Fallback: extract caption from response
+        if not result['caption'] or len(result['caption']) < 20:
+            # Look for quoted content or substantial text
             for line in lines:
-                line = line.strip()
-                if len(line) > 50 and not line.startswith('#'):
-                    result['caption'] = line
-                    break
+                line = line.strip().strip('"').strip('*')
+                if len(line) > 50 and not line.startswith('#') and not line.startswith('**'):
+                    if 'caption' not in line.lower() and 'hashtag' not in line.lower():
+                        result['caption'] = line
+                        break
 
         return result
 
