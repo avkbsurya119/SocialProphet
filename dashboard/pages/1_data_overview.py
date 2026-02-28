@@ -1,7 +1,5 @@
 """
 Data Overview Page - SocialProphet Dashboard.
-
-Explore and visualize the social media engagement datasets.
 """
 
 import streamlit as st
@@ -10,210 +8,166 @@ import numpy as np
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.config import Config
-
-st.set_page_config(
-    page_title="Data Overview - SocialProphet",
-    page_icon="📊",
-    layout="wide"
-)
+st.set_page_config(page_title="Data Overview - SocialProphet", page_icon="📊", layout="wide")
 
 st.title("📊 Data Overview")
-st.markdown("Explore the social media engagement datasets used for forecasting.")
+st.markdown("Explore the social media engagement datasets.")
 
-# Data paths
-PROCESSED_DIR = Path(Config.PROCESSED_DATA_DIR)
-
+# Data directory
+DATA_DIR = PROJECT_ROOT / "data" / "processed"
 
 @st.cache_data
-def load_data(filename: str) -> pd.DataFrame:
-    """Load and cache dataset."""
-    filepath = PROCESSED_DIR / filename
+def load_dataset(filename: str) -> pd.DataFrame:
+    """Load dataset from processed folder."""
+    filepath = DATA_DIR / filename
     if filepath.exists():
         df = pd.read_csv(filepath)
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-        if 'ds' in df.columns:
-            df['ds'] = pd.to_datetime(df['ds'])
+        # Parse date columns
+        for col in ['timestamp', 'ds', 'date']:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
         return df
     return pd.DataFrame()
 
+# Sidebar - Dataset selection
+st.sidebar.markdown("### Select Dataset")
 
-# Dataset selection
-st.sidebar.markdown("### Dataset Selection")
-dataset_options = {
-    "Combined Data": "combined_data.csv",
-    "Instagram (Cleaned)": "instagram_cleaned.csv",
-    "Social Media (Cleaned)": "social_media_cleaned.csv",
-    "Viral (Cleaned)": "viral_cleaned.csv",
+available_files = {
     "Training Data": "train_data.csv",
     "Test Data": "test_data.csv",
-    "Daily Aggregated": "daily_aggregated.csv"
+    "Combined Data": "combined_data.csv",
+    "Instagram (Cleaned)": "instagram_cleaned.csv",
+    "Daily Aggregated": "daily_aggregated.csv",
 }
 
-selected_dataset = st.sidebar.selectbox(
-    "Select Dataset",
-    options=list(dataset_options.keys()),
-    index=0
-)
+# Check which files exist
+existing_files = {}
+for name, filename in available_files.items():
+    if (DATA_DIR / filename).exists():
+        existing_files[name] = filename
 
-# Load selected dataset
-df = load_data(dataset_options[selected_dataset])
-
-if df.empty:
-    st.warning(f"Dataset not found: {dataset_options[selected_dataset]}")
-    st.info("Run the preprocessing pipeline first: `python scripts/preprocess_datasets.py`")
+if not existing_files:
+    st.error("No data files found! Run preprocessing first:")
+    st.code("python scripts/preprocess_datasets.py")
     st.stop()
 
-# Dataset overview
-st.markdown("---")
-st.markdown("## Dataset Overview")
+selected = st.sidebar.selectbox("Dataset", list(existing_files.keys()))
+df = load_dataset(existing_files[selected])
 
+if df.empty:
+    st.error(f"Could not load {selected}")
+    st.stop()
+
+# Dataset info
+st.markdown("---")
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("Total Rows", f"{len(df):,}")
-
+    st.metric("Rows", f"{len(df):,}")
 with col2:
-    st.metric("Total Columns", len(df.columns))
-
+    st.metric("Columns", len(df.columns))
 with col3:
     if 'engagement' in df.columns:
         st.metric("Avg Engagement", f"{df['engagement'].mean():,.0f}")
     elif 'y' in df.columns:
-        st.metric("Avg Target (log)", f"{df['y'].mean():.2f}")
-
+        st.metric("Avg Target", f"{df['y'].mean():.2f}")
+    else:
+        st.metric("Numeric Cols", len(df.select_dtypes(include=[np.number]).columns))
 with col4:
     if 'platform' in df.columns:
         st.metric("Platforms", df['platform'].nunique())
-    elif 'source' in df.columns:
-        st.metric("Sources", df['source'].nunique())
+    else:
+        st.metric("Missing %", f"{(df.isnull().sum().sum() / df.size * 100):.1f}%")
 
 # Data preview
 st.markdown("---")
-st.markdown("## Data Preview")
+st.markdown("### Data Preview")
 
-preview_rows = st.slider("Rows to display", 5, 100, 10)
-st.dataframe(df.head(preview_rows), use_container_width=True)
+num_rows = st.slider("Rows to display", 5, 50, 10)
+st.dataframe(df.head(num_rows), use_container_width=True)
 
 # Column info
 st.markdown("---")
-st.markdown("## Column Information")
+st.markdown("### Column Information")
 
-col_info = pd.DataFrame({
-    'Column': df.columns,
-    'Type': df.dtypes.values,
-    'Non-Null': df.count().values,
-    'Null %': ((df.isnull().sum() / len(df)) * 100).round(2).values,
-    'Unique': df.nunique().values
-})
+col_info = []
+for col in df.columns:
+    col_info.append({
+        'Column': col,
+        'Type': str(df[col].dtype),
+        'Non-Null': df[col].notna().sum(),
+        'Null %': f"{(df[col].isna().sum() / len(df) * 100):.1f}%",
+        'Unique': df[col].nunique()
+    })
 
-st.dataframe(col_info, use_container_width=True)
+st.dataframe(pd.DataFrame(col_info), use_container_width=True, hide_index=True)
 
 # Statistics
 st.markdown("---")
-st.markdown("## Descriptive Statistics")
+st.markdown("### Statistics")
 
 numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 if numeric_cols:
-    stats_df = df[numeric_cols].describe().round(2)
-    st.dataframe(stats_df, use_container_width=True)
+    st.dataframe(df[numeric_cols].describe().round(2), use_container_width=True)
 
 # Visualizations
 st.markdown("---")
-st.markdown("## Visualizations")
+st.markdown("### Visualizations")
 
-viz_tabs = st.tabs(["Engagement Distribution", "Time Series", "Platform Analysis"])
+tab1, tab2, tab3 = st.tabs(["Distribution", "Time Series", "Platforms"])
 
-with viz_tabs[0]:
-    st.markdown("### Engagement Distribution")
+with tab1:
     if 'engagement' in df.columns:
-        st.bar_chart(df['engagement'].value_counts().head(50))
+        st.bar_chart(df['engagement'].value_counts().head(30))
     elif 'y' in df.columns:
         st.line_chart(df['y'])
-    else:
-        st.info("No engagement column found in this dataset.")
 
-with viz_tabs[1]:
-    st.markdown("### Engagement Over Time")
-    date_col = 'timestamp' if 'timestamp' in df.columns else ('ds' if 'ds' in df.columns else None)
+with tab2:
+    date_col = None
+    for col in ['ds', 'timestamp', 'date']:
+        if col in df.columns:
+            date_col = col
+            break
+
     value_col = 'engagement' if 'engagement' in df.columns else ('y' if 'y' in df.columns else None)
 
     if date_col and value_col:
-        time_df = df[[date_col, value_col]].copy()
-        time_df = time_df.set_index(date_col)
-        if len(time_df) > 1000:
-            time_df = time_df.resample('D').mean()
-        st.line_chart(time_df)
+        chart_df = df[[date_col, value_col]].dropna()
+        chart_df = chart_df.set_index(date_col)
+        st.line_chart(chart_df)
     else:
-        st.info("No time series data available for this dataset.")
+        st.info("No time series data available")
 
-with viz_tabs[2]:
-    st.markdown("### Platform Distribution")
+with tab3:
     if 'platform' in df.columns:
         platform_counts = df['platform'].value_counts()
         st.bar_chart(platform_counts)
-
-        # Platform metrics
-        st.markdown("#### Platform Statistics")
-        platform_stats = df.groupby('platform').agg({
-            'engagement': ['mean', 'median', 'sum', 'count']
-        }).round(2)
-        platform_stats.columns = ['Mean', 'Median', 'Total', 'Posts']
-        st.dataframe(platform_stats, use_container_width=True)
-    elif 'source' in df.columns:
-        source_counts = df['source'].value_counts()
-        st.bar_chart(source_counts)
     else:
-        st.info("No platform/source column found in this dataset.")
+        st.info("No platform column in this dataset")
 
-# Data quality
+# Export
 st.markdown("---")
-st.markdown("## Data Quality Check")
-
-quality_checks = {
-    "Missing Values": (df.isnull().sum().sum() == 0),
-    "No Duplicates": (df.duplicated().sum() == 0),
-    "Positive Engagement": (df['engagement'].min() >= 0 if 'engagement' in df.columns else True),
-    "Valid Dates": (df[date_col].notna().all() if date_col else True)
-}
-
-col1, col2, col3, col4 = st.columns(4)
-cols = [col1, col2, col3, col4]
-
-for i, (check, passed) in enumerate(quality_checks.items()):
-    with cols[i]:
-        if passed:
-            st.success(f"✅ {check}")
-        else:
-            st.error(f"❌ {check}")
-
-# Export options
-st.markdown("---")
-st.markdown("## Export Data")
+st.markdown("### Export Data")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    csv_data = df.to_csv(index=False).encode('utf-8')
+    csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Download CSV",
-        data=csv_data,
-        file_name=f"{selected_dataset.lower().replace(' ', '_')}.csv",
-        mime="text/csv"
+        "📥 Download CSV",
+        csv,
+        f"{selected.lower().replace(' ', '_')}.csv",
+        "text/csv"
     )
 
 with col2:
-    json_data = df.to_json(orient='records', date_format='iso')
     st.download_button(
-        label="📥 Download JSON",
-        data=json_data,
-        file_name=f"{selected_dataset.lower().replace(' ', '_')}.json",
-        mime="application/json"
+        "📥 Download JSON",
+        df.head(1000).to_json(orient='records'),
+        f"{selected.lower().replace(' ', '_')}.json",
+        "application/json"
     )
-
-# Footer
-st.markdown("---")
-st.caption("SocialProphet - Data Overview | Use the sidebar to switch datasets")
