@@ -109,30 +109,50 @@ if st.button("🚀 Generate Content", type="primary", use_container_width=True):
     else:
         with st.spinner("Generating with Llama 3.2..."):
             try:
+                from src.generation.llm_client import HuggingFaceClient
+                from src.insights.prompt_builder import PromptBuilder
                 from src.generation.content_gen import ContentGenerator
                 from src.generation.fiit_validator import FIITValidator
 
-                generator = ContentGenerator()
+                # Initialize components
+                llm = HuggingFaceClient()
+                prompt_builder = PromptBuilder(platform=platform)
+                generator = ContentGenerator(llm, prompt_builder)
                 validator = FIITValidator()
 
                 posts = []
                 progress = st.progress(0)
 
+                # Create simple insights from context
+                insights = {
+                    'summary': context,
+                    'temporal_patterns': {'best_days': []},
+                    'trend_analysis': {'direction': 'growth'}
+                }
+
                 for i in range(num_posts):
-                    post = generator.generate_single_post(
-                        platform=platform,
+                    post = generator.generate_post(
+                        insights=insights,
                         theme=theme,
-                        topic=topic,
-                        context=context
+                        topic=topic
                     )
 
-                    fiit = validator.validate(
-                        post.get('caption', ''),
-                        context={'theme': theme, 'platform': platform}
-                    )
+                    caption = post.get('caption', '')
+                    fiit_result = validator.validate(caption)
+
+                    # Extract scores from nested structure
+                    scores = fiit_result.get('scores', {})
+                    fiit = {
+                        'fluency': scores.get('fluency', 0),
+                        'interactivity': scores.get('interactivity', 0),
+                        'information': scores.get('information', 0),
+                        'tone': scores.get('tone', 0),
+                        'overall': scores.get('overall', 0),
+                        'passed': fiit_result.get('all_passed', False)
+                    }
 
                     posts.append({
-                        'caption': post.get('caption', ''),
+                        'caption': caption,
                         'fiit': fiit
                     })
 
