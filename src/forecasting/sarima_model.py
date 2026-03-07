@@ -32,14 +32,15 @@ class SARIMAForecaster:
     """
     SARIMA-based time series forecaster.
 
-    Handles log-transformed engagement data with automatic order selection.
+    UPDATED: Now trains on ORIGINAL SCALE for better variance capture.
     """
 
     def __init__(
         self,
         order: Optional[Tuple[int, int, int]] = None,
         seasonal_order: Optional[Tuple[int, int, int, int]] = None,
-        auto_select: bool = True
+        auto_select: bool = True,
+        use_original_scale: bool = True
     ):
         """
         Initialize SARIMA forecaster.
@@ -48,11 +49,13 @@ class SARIMAForecaster:
             order: (p, d, q) - AR, differencing, MA orders
             seasonal_order: (P, D, Q, m) - Seasonal orders, m=7 for weekly
             auto_select: Use auto_arima to select optimal parameters
+            use_original_scale: Train on original scale (recommended)
         """
         default_params = Config.SARIMA_PARAMS
         self.order = order if order is not None else default_params.get('order', (1, 1, 1))
         self.seasonal_order = seasonal_order if seasonal_order is not None else default_params.get('seasonal_order', (1, 1, 1, 7))
         self.auto_select = auto_select
+        self.use_original_scale = use_original_scale
 
         self.model = None
         self.fitted_model = None
@@ -61,6 +64,7 @@ class SARIMAForecaster:
         self.selected_seasonal_order = None
         self.train_series = None
         self.train_index = None
+        self.y_mean = None
 
     def auto_select_order(
         self,
@@ -114,28 +118,45 @@ class SARIMAForecaster:
     def fit(
         self,
         series: pd.Series,
-        exog: Optional[np.ndarray] = None
+        exog: Optional[np.ndarray] = None,
+        y_raw: Optional[pd.Series] = None
     ) -> "SARIMAForecaster":
         """
         Train SARIMA model.
 
         Args:
-            series: Log-transformed time series
+            series: Time series (log scale or original scale)
             exog: Exogenous variables (optional)
+            y_raw: Original scale series (if series is log scale)
 
         Returns:
             self
         """
+        # Determine which scale to use
+        if self.use_original_scale and y_raw is not None:
+            train_data = y_raw.copy()
+            self.y_mean = y_raw.mean()
+            scale_type = "original"
+        elif self.use_original_scale:
+            # Convert log to original
+            train_data = pd.Series(np.expm1(series.values))
+            self.y_mean = train_data.mean()
+            scale_type = "original (converted)"
+        else:
+            train_data = series.copy()
+            self.y_mean = series.mean()
+            scale_type = "log"
+
         # Store training data
-        self.train_series = series.copy()
+        self.train_series = train_data.copy()
         self.train_index = series.index if hasattr(series, 'index') else None
 
-        print(f"Training SARIMA on {len(series)} observations...")
-        print(f"  y (log) range: [{series.min():.2f}, {series.max():.2f}]")
+        print(f"Training SARIMA on {len(train_data)} observations...")
+        print(f"  y ({scale_type}) range: [{train_data.min():.0f}, {train_data.max():.0f}]")
 
         # Auto-select parameters if enabled
         if self.auto_select:
-            self.auto_select_order(series)
+            self.auto_select_order(train_data)
             order = self.selected_order
             seasonal_order = self.selected_seasonal_order
         else:
@@ -152,7 +173,7 @@ class SARIMAForecaster:
             warnings.simplefilter("ignore")
 
             self.model = SARIMAX(
-                series,
+                train_data,
                 order=order,
                 seasonal_order=seasonal_order,
                 exog=exog,
@@ -197,20 +218,31 @@ class SARIMAForecaster:
         predictions = forecast.predicted_mean
 
         # Build result DataFrame
-        result = pd.DataFrame({
-            'yhat': predictions.values
-        })
-
-        if return_conf_int:
-            conf_int = forecast.conf_int(alpha=alpha)
-            result['yhat_lower'] = conf_int.iloc[:, 0].values
-            result['yhat_upper'] = conf_int.iloc[:, 1].values
-
-        # Add original scale predictions
-        result['yhat_original'] = self.inverse_transform(result['yhat'].values)
-        if return_conf_int:
-            result['yhat_lower_original'] = self.inverse_transform(result['yhat_lower'].values)
-            result['yhat_upper_original'] = self.inverse_transform(result['yhat_upper'].values)
+        if self.use_original_scale:
+            # Predictions are already in original scale
+            result = pd.DataFrame({
+                'yhat_original': np.clip(predictions.values, 0, None),
+                'yhat': np.log1p(np.clip(predictions.values, 0, None))  # Convert to log for compatibility
+            })
+            if return_conf_int:
+                conf_int = forecast.conf_int(alpha=alpha)
+                result['yhat_lower_original'] = np.clip(conf_int.iloc[:, 0].values, 0, None)
+                result['yhat_upper_original'] = np.clip(conf_int.iloc[:, 1].values, 0, None)
+                result['yhat_lower'] = np.log1p(result['yhat_lower_original'])
+                result['yhat_upper'] = np.log1p(result['yhat_upper_original'])
+        else:
+            result = pd.DataFrame({
+                'yhat': predictions.values
+            })
+            if return_conf_int:
+                conf_int = forecast.conf_int(alpha=alpha)
+                result['yhat_lower'] = conf_int.iloc[:, 0].values
+                result['yhat_upper'] = conf_int.iloc[:, 1].values
+            # Add original scale predictions
+            result['yhat_original'] = self.inverse_transform(result['yhat'].values)
+            if return_conf_int:
+                result['yhat_lower_original'] = self.inverse_transform(result['yhat_lower'].values)
+                result['yhat_upper_original'] = self.inverse_transform(result['yhat_upper'].values)
 
         return result
 
