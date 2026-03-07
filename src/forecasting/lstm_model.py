@@ -48,35 +48,36 @@ class LSTMForecaster:
     """
     LSTM-based time series forecaster.
 
-    Handles log-transformed engagement data with sequence windowing.
+    UPDATED: Now trains on ORIGINAL SCALE for better variance capture.
 
     Data Flow:
-    1. Input: y (log scale) + features
+    1. Input: y_raw (original scale) + features
     2. MinMax scale all features
     3. Create sequences (window_size timesteps)
     4. Train LSTM
-    5. Predict -> inverse MinMax -> log scale -> expm1 -> original scale
+    5. Predict -> inverse MinMax -> original scale
     """
 
-    # Architecture parameters from requirements
+    # Architecture parameters - optimized for small dataset
     DEFAULT_PARAMS = {
-        'n_units': 50,
+        'n_units': 64,  # Increased for more capacity
         'n_layers': 2,
-        'window_size': 30,  # Look-back window
-        'epochs': 100,
-        'batch_size': 16,
-        'dropout': 0.2,
-        'learning_rate': 0.001,
-        'early_stopping_patience': 10,
-        'validation_split': 0.1,
+        'window_size': 14,  # Reduced for better gradient flow with small data
+        'epochs': 150,
+        'batch_size': 8,  # Smaller batch for small dataset
+        'dropout': 0.3,  # Increased to prevent overfitting
+        'learning_rate': 0.0005,  # Reduced for stability
+        'early_stopping_patience': 15,
+        'validation_split': 0.15,
     }
 
-    def __init__(self, params: Optional[Dict] = None):
+    def __init__(self, params: Optional[Dict] = None, use_original_scale: bool = True):
         """
         Initialize LSTM forecaster.
 
         Args:
             params: Model parameters (see DEFAULT_PARAMS)
+            use_original_scale: Train on original scale (recommended)
         """
         if not TENSORFLOW_AVAILABLE:
             raise ImportError("TensorFlow not installed. Run: pip install tensorflow")
@@ -88,6 +89,8 @@ class LSTMForecaster:
         self.history = None
         self.feature_columns = None
         self.n_features = None
+        self.use_original_scale = use_original_scale
+        self.y_scaler = MinMaxScaler(feature_range=(0, 1))  # Separate scaler for target
 
     def _create_sequences(
         self,
@@ -162,7 +165,7 @@ class LSTMForecaster:
     def prepare_features(
         self,
         df: pd.DataFrame,
-        target_col: str = 'y',
+        target_col: str = 'y_raw',
         feature_cols: Optional[List[str]] = None
     ) -> np.ndarray:
         """
@@ -170,20 +173,32 @@ class LSTMForecaster:
 
         Args:
             df: DataFrame with features
-            target_col: Target column name ('y' - log scale)
+            target_col: Target column name ('y_raw' for original scale)
             feature_cols: Feature columns to include
 
         Returns:
             Feature array with target as first column
         """
-        # Default features for LSTM
+        # Determine target column based on scale setting
+        if self.use_original_scale:
+            if 'y_raw' in df.columns:
+                target_col = 'y_raw'
+            else:
+                # Convert log to original
+                df = df.copy()
+                df['y_raw'] = np.expm1(df['y'])
+                target_col = 'y_raw'
+
+        # Default features for LSTM - use original scale features
         if feature_cols is None:
             feature_cols = [
-                'y',  # Target (log scale) - MUST be first
-                'y_lag_1', 'y_lag_7', 'y_lag_14',
-                'y_rolling_mean_7', 'y_rolling_std_7',
+                target_col,  # Target - MUST be first
+                'engagement_mean',  # Per-post engagement
+                'post_count',  # Number of posts
+                'day_of_week',
+                'is_weekend',
                 'day_sin', 'day_cos',
-                'is_weekend'
+                'month_sin', 'month_cos',
             ]
 
         # Filter to available columns
@@ -358,16 +373,21 @@ class LSTMForecaster:
         test_predictions_log = test_predictions_log[:len(test_df)]
 
         # Build result DataFrame
-        result = pd.DataFrame({
-            'yhat': test_predictions_log,
-            'yhat_original': self.inverse_transform(test_predictions_log)
-        })
+        if self.use_original_scale:
+            # Predictions are in original scale
+            result = pd.DataFrame({
+                'yhat_original': np.clip(test_predictions_log, 0, None),
+                'yhat': np.log1p(np.clip(test_predictions_log, 0, None))  # Convert to log for compatibility
+            })
+        else:
+            result = pd.DataFrame({
+                'yhat': test_predictions_log,
+                'yhat_original': self.inverse_transform(test_predictions_log)
+            })
 
         if 'y' in test_df.columns:
             result['y_actual'] = test_df['y'].values[:len(result)]
-            result['y_actual_original'] = self.inverse_transform(
-                test_df['y'].values[:len(result)]
-            )
+            result['y_actual_original'] = np.expm1(test_df['y'].values[:len(result)])
 
         if 'y_raw' in test_df.columns:
             result['y_raw'] = test_df['y_raw'].values[:len(result)]
@@ -376,6 +396,9 @@ class LSTMForecaster:
 
     def inverse_transform(self, y_log: np.ndarray) -> np.ndarray:
         """Convert log-scale to original scale."""
+        if self.use_original_scale:
+            # Already in original scale
+            return np.clip(y_log, 0, None)
         return np.expm1(y_log)
 
     def evaluate(
