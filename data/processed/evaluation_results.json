@@ -1,0 +1,27 @@
+{
+  "n_samples": 68,
+  "y_true_mean": 28331.323529411766,
+  "y_true_std": 4118.122699944637,
+  "y_pred_mean": 28072.23168011929,
+  "y_pred_std": 327.7149272960753,
+  "metrics_original_scale": {
+    "mape": 11.941322711951017,
+    "rmse": 4197.633801442293,
+    "rmse_pct": 14.816229100926323,
+    "mae": 3339.980215285903,
+    "mse": 17620129.531010874,
+    "r2": -0.038988001068831935,
+    "smape": 11.79632589746821
+  },
+  "thresholds": {
+    "mape": 15.0,
+    "rmse_pct": 15.0,
+    "r2": 0.7
+  },
+  "pass_fail": {
+    "mape": true,
+    "rmse_pct": true,
+    "r2": false
+  },
+  "all_passed": false
+}

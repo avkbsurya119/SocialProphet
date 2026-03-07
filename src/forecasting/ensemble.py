@@ -108,29 +108,30 @@ class EnsembleForecaster:
             train_prophet_df = train_df[['ds', 'y']].copy()
             train_prophet_df['ds'] = pd.to_datetime(train_prophet_df['ds'])
 
-        # 1. Fit Prophet
+        # 1. Fit Prophet (on original scale)
         print("\n--- Prophet ---")
         try:
-            prophet = ProphetForecaster()
-            prophet.fit(train_prophet_df)
+            prophet = ProphetForecaster(use_original_scale=True)
+            prophet.fit(train_df)  # Pass full df so it can access y_raw
             self.add_model('prophet', prophet)
         except Exception as e:
             print(f"Prophet fitting failed: {e}")
 
-        # 2. Fit SARIMA
+        # 2. Fit SARIMA (on original scale)
         print("\n--- SARIMA ---")
         try:
-            sarima = SARIMAForecaster(auto_select=True)
-            sarima.fit(pd.Series(train_df['y'].values))
+            y_raw = train_df['y_raw'] if 'y_raw' in train_df.columns else None
+            sarima = SARIMAForecaster(auto_select=True, use_original_scale=True)
+            sarima.fit(pd.Series(train_df['y'].values), y_raw=y_raw)
             self.add_model('sarima', sarima)
         except Exception as e:
             print(f"SARIMA fitting failed: {e}")
 
-        # 3. Fit LSTM (optional)
+        # 3. Fit LSTM (on original scale)
         if fit_lstm and TENSORFLOW_AVAILABLE:
             print("\n--- LSTM ---")
             try:
-                lstm = LSTMForecaster()
+                lstm = LSTMForecaster(use_original_scale=True)
                 lstm.fit(train_df, verbose=0)
                 self.add_model('lstm', lstm)
             except Exception as e:
@@ -210,11 +211,11 @@ class EnsembleForecaster:
         # Store predictions
         self.predictions = predictions
 
-        # Compute weighted ensemble
-        ensemble_log = self.weighted_average(
-            {k: v for k, v in predictions.items() if not k.endswith('_original')}
+        # Compute weighted ensemble on ORIGINAL SCALE for better averaging
+        ensemble_original = self.weighted_average_original(
+            {k: v for k, v in predictions.items() if k.endswith('_original')}
         )
-        ensemble_original = self.inverse_transform(ensemble_log)
+        ensemble_log = np.log1p(ensemble_original)
 
         # Build result DataFrame
         result = pd.DataFrame()
@@ -275,6 +276,40 @@ class EnsembleForecaster:
         else:
             # Fallback: simple average
             return np.mean([p[:min_len] for p in predictions.values()], axis=0)
+
+    def weighted_average_original(
+        self,
+        predictions: Dict[str, np.ndarray]
+    ) -> np.ndarray:
+        """
+        Compute weighted average of predictions in original scale.
+
+        Args:
+            predictions: Dict of model_name_original -> predictions array (original scale)
+
+        Returns:
+            Weighted average predictions (original scale)
+        """
+        # Find minimum length
+        min_len = min(len(p) for p in predictions.values())
+
+        # Initialize
+        weighted_sum = np.zeros(min_len)
+        total_weight = 0
+
+        for name, preds in predictions.items():
+            # Extract base model name (remove '_original' suffix)
+            base_name = name.replace('_original', '')
+            if base_name in self.weights:
+                weight = self.weights[base_name]
+                weighted_sum += weight * preds[:min_len]
+                total_weight += weight
+
+        if total_weight > 0:
+            return np.clip(weighted_sum / total_weight, 0, None)
+        else:
+            # Fallback: simple average
+            return np.clip(np.mean([p[:min_len] for p in predictions.values()], axis=0), 0, None)
 
     def inverse_transform(self, y_log: np.ndarray) -> np.ndarray:
         """Convert log-scale to original scale."""
