@@ -1,0 +1,22 @@
+{
+  "weights": {
+    "prophet": 0.3,
+    "regression": 0.7
+  },
+  "ensemble_metrics": {
+    "mape": 11.941322711951017,
+    "rmse": 4197.633801442293,
+    "rmse_pct": 14.816229100926323,
+    "r2": -0.038988001068831935
+  },
+  "model_metrics": {
+    "prophet": {
+      "mape": 12.6,
+      "r2": -0.31
+    },
+    "regression": {
+      "mape": 12.06,
+      "r2": -0.01
+    }
+  }
+}
