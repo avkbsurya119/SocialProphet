@@ -55,11 +55,17 @@ class Config:
         "seasonal_order": (1, 1, 1, 7),  # Weekly seasonality
     }
 
-    # Ensemble Weights
+    # Ensemble Weights (adjusted - SARIMA reduced due to poor performance)
     ENSEMBLE_WEIGHTS = {
-        "prophet": 0.4,
-        "sarima": 0.35,
-        "lstm": 0.25,  # Optional
+        "prophet": 0.50,
+        "sarima": 0.10,  # Reduced - tends to fail on low-variance data
+        "lstm": 0.40,    # Increased - better at capturing patterns
+    }
+
+    # Adaptive weights when a model fails (MAPE > 50%)
+    ENSEMBLE_WEIGHTS_NO_SARIMA = {
+        "prophet": 0.55,
+        "lstm": 0.45,
     }
 
     # LLM Generation Parameters
