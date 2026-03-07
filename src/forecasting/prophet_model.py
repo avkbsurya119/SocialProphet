@@ -32,60 +32,90 @@ class ProphetForecaster:
     """
     Prophet-based time series forecaster.
 
-    Handles log-transformed engagement data:
-    - Input: y in log scale (log1p transformed)
-    - Output: Predictions in both log and original scale
+    UPDATED: Now trains on ORIGINAL SCALE for better variance capture.
+    Log scale compression was causing poor R² scores.
+
+    - Input: y_raw (original engagement) or y (log scale with auto-conversion)
+    - Output: Predictions in original scale
     """
 
-    def __init__(self, params: Optional[Dict] = None):
+    def __init__(self, params: Optional[Dict] = None, use_original_scale: bool = True):
         """
         Initialize Prophet forecaster.
 
         Args:
             params: Prophet parameters (defaults from Config.PROPHET_PARAMS)
-                - daily_seasonality: True
-                - weekly_seasonality: True
-                - yearly_seasonality: True
-                - changepoint_prior_scale: 0.05
-                - seasonality_prior_scale: 10.0
+            use_original_scale: Train on original scale (recommended for better R²)
         """
-        self.params = params if params is not None else Config.PROPHET_PARAMS.copy()
+        default_params = {
+            'daily_seasonality': False,  # Too noisy for daily data
+            'weekly_seasonality': True,
+            'yearly_seasonality': False,  # Not enough data
+            'changepoint_prior_scale': 0.15,  # Increased for more flexibility
+            'seasonality_prior_scale': 10.0,
+            'seasonality_mode': 'multiplicative',  # Better for engagement data
+        }
+        self.params = {**default_params, **(params or {})}
         self.model = None
         self.is_fitted = False
         self.train_df = None
         self.forecast = None
+        self.use_original_scale = use_original_scale
+        self.y_mean = None  # For normalization
+        self.y_std = None  # For variance scaling
+        self.pred_std = None  # Predicted std on training data
 
     def fit(self, df: pd.DataFrame) -> "ProphetForecaster":
         """
         Train Prophet model.
 
         Args:
-            df: DataFrame with columns ['ds', 'y']
+            df: DataFrame with columns ['ds', 'y'] or ['ds', 'y', 'y_raw']
                 - ds: datetime column
-                - y: log-transformed target
+                - y: log-transformed target (will use y_raw if available and use_original_scale=True)
+                - y_raw: original scale target (preferred)
 
         Returns:
             self
         """
         # Validate input
-        if 'ds' not in df.columns or 'y' not in df.columns:
-            raise ValueError("DataFrame must have 'ds' and 'y' columns")
+        if 'ds' not in df.columns:
+            raise ValueError("DataFrame must have 'ds' column")
 
-        # Prepare data
-        self.train_df = df[['ds', 'y']].copy()
-        self.train_df['ds'] = pd.to_datetime(self.train_df['ds'])
+        # Prepare data - use original scale if available and configured
+        self.train_df = pd.DataFrame()
+        self.train_df['ds'] = pd.to_datetime(df['ds'])
+
+        if self.use_original_scale and 'y_raw' in df.columns:
+            self.train_df['y'] = df['y_raw'].values
+            self.y_mean = df['y_raw'].mean()
+            scale_type = "original"
+        elif 'y' in df.columns:
+            if self.use_original_scale:
+                # Convert log to original
+                self.train_df['y'] = np.expm1(df['y'].values)
+                self.y_mean = self.train_df['y'].mean()
+                scale_type = "original (converted from log)"
+            else:
+                self.train_df['y'] = df['y'].values
+                self.y_mean = df['y'].mean()
+                scale_type = "log"
+        else:
+            raise ValueError("DataFrame must have 'y' or 'y_raw' column")
 
         print(f"Training Prophet on {len(self.train_df)} observations...")
         print(f"  Date range: {self.train_df['ds'].min()} to {self.train_df['ds'].max()}")
-        print(f"  y (log) range: [{self.train_df['y'].min():.2f}, {self.train_df['y'].max():.2f}]")
+        print(f"  y ({scale_type}) range: [{self.train_df['y'].min():.0f}, {self.train_df['y'].max():.0f}]")
+        print(f"  y mean: {self.y_mean:.0f}")
 
         # Initialize Prophet with parameters
         self.model = Prophet(
-            daily_seasonality=self.params.get('daily_seasonality', True),
+            daily_seasonality=self.params.get('daily_seasonality', False),
             weekly_seasonality=self.params.get('weekly_seasonality', True),
-            yearly_seasonality=self.params.get('yearly_seasonality', False),  # Not enough data
-            changepoint_prior_scale=self.params.get('changepoint_prior_scale', 0.05),
+            yearly_seasonality=self.params.get('yearly_seasonality', False),
+            changepoint_prior_scale=self.params.get('changepoint_prior_scale', 0.15),
             seasonality_prior_scale=self.params.get('seasonality_prior_scale', 10.0),
+            seasonality_mode=self.params.get('seasonality_mode', 'multiplicative'),
         )
 
         # Fit model (suppress Stan output)
@@ -95,7 +125,13 @@ class ProphetForecaster:
         self.model.fit(self.train_df)
         self.is_fitted = True
 
+        # Calculate variance scaling factor from in-sample predictions
+        in_sample = self.model.predict(self.train_df[['ds']])
+        self.y_std = self.train_df['y'].std()
+        self.pred_std = in_sample['yhat'].std()
+
         print("Prophet model fitted successfully!")
+        print(f"  Training y std: {self.y_std:.0f}, Prediction std: {self.pred_std:.0f}")
         return self
 
     def predict(
@@ -162,9 +198,19 @@ class ProphetForecaster:
 
         # Build result DataFrame
         result = predictions[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
-        result['yhat_original'] = self.inverse_transform(result['yhat'].values)
-        result['yhat_lower_original'] = self.inverse_transform(result['yhat_lower'].values)
-        result['yhat_upper_original'] = self.inverse_transform(result['yhat_upper'].values)
+
+        if self.use_original_scale:
+            # Predictions are already in original scale (no variance scaling - it hurts R²)
+            result['yhat_original'] = np.clip(result['yhat'].values, 0, None)
+            result['yhat_lower_original'] = np.clip(result['yhat_lower'].values, 0, None)
+            result['yhat_upper_original'] = np.clip(result['yhat_upper'].values, 0, None)
+            # Convert to log scale for compatibility
+            result['yhat'] = np.log1p(result['yhat_original'])
+        else:
+            # Predictions are in log scale, convert to original
+            result['yhat_original'] = self.inverse_transform(result['yhat'].values)
+            result['yhat_lower_original'] = self.inverse_transform(result['yhat_lower'].values)
+            result['yhat_upper_original'] = self.inverse_transform(result['yhat_upper'].values)
 
         # Add actual values if present
         if 'y' in test_df.columns:
