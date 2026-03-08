@@ -148,7 +148,9 @@ with tab1:
             if stationarity:
                 st.markdown("**Stationarity**")
                 adf = stationarity.get('adf', {})
-                st.write(f"- ADF p-value: {adf.get('p_value', 'N/A'):.4f}")
+                p_val = adf.get('p_value')
+                p_val_str = f"{p_val:.4f}" if isinstance(p_val, (int, float)) else "N/A"
+                st.write(f"- ADF p-value: {p_val_str}")
                 st.write(f"- Stationary: {adf.get('is_stationary', 'N/A')}")
     else:
         st.warning("Training/test data not found.")
