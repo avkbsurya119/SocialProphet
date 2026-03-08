@@ -18,13 +18,37 @@ st.set_page_config(page_title="Twitter Live - SocialProphet", page_icon="🐦", 
 st.title("🐦 Twitter Live Data")
 st.markdown("Real-time Twitter data collection and analysis.")
 
-# Check API
+# Check API and get detailed status
 api_status = Config.validate_api_keys()
 twitter_ok = api_status.get('twitter', False)
 
+# Get detailed collector status
+collector_status = None
+try:
+    from src.data_processing.twitter_collector import TwitterCollector
+    collector = TwitterCollector()
+    collector_status = collector.get_status()
+except Exception as e:
+    collector_status = {'error': str(e)}
+
 # Sidebar
 st.sidebar.markdown("### API Status")
-if twitter_ok:
+if collector_status and collector_status.get('credits_exhausted'):
+    st.sidebar.warning("⚠️ API Credits Exhausted")
+    st.sidebar.markdown("""
+    **Twitter API requires payment.**
+
+    Since November 2023, Twitter (X) requires a paid plan for API access.
+
+    **Options:**
+    - Use demo data (current mode)
+    - Subscribe to X API Basic ($100/mo)
+    - Use Instagram Analytics instead
+
+    *Demo mode provides realistic sample data.*
+    """)
+    twitter_ok = False
+elif twitter_ok:
     st.sidebar.success("✅ Twitter API Connected")
 else:
     st.sidebar.error("❌ Twitter API Not Configured")
@@ -49,7 +73,16 @@ days_back = st.sidebar.slider("Days Back", 1, 7, 7)
 st.markdown("---")
 
 if not twitter_ok:
-    st.warning("⚠️ Twitter API not configured. Set TWITTER_BEARER_TOKEN in .env")
+    if collector_status and collector_status.get('credits_exhausted'):
+        st.warning("⚠️ Twitter API credits exhausted. Showing demo data.")
+        st.info("""
+        **Note:** Twitter moved to a paid API model in 2023. Free tier no longer allows tweet searches.
+
+        **Alternative:** Use the **Instagram Analytics** data which has 30,000 real posts with engagement metrics.
+        Check the **Posting Advisor** page for actionable insights from your Instagram data.
+        """)
+    else:
+        st.warning("⚠️ Twitter API not configured. Set TWITTER_BEARER_TOKEN in .env")
 
     # Demo data
     st.markdown("### Demo Data (Sample)")

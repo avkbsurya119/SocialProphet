@@ -73,13 +73,15 @@ class TwitterCollector:
         self.bearer_token = bearer_token or os.getenv('TWITTER_BEARER_TOKEN')
 
         # Initialize client if possible
+        self.credits_exhausted = False
         if HAS_TWEEPY and self.bearer_token:
             try:
                 self.client = tweepy.Client(
                     bearer_token=self.bearer_token,
                     wait_on_rate_limit=True
                 )
-                self.api_available = True
+                # Test the connection with a minimal request
+                self._test_api_connection()
             except Exception as e:
                 self.last_error = str(e)
                 self.client = None
@@ -89,6 +91,23 @@ class TwitterCollector:
                 self.last_error = "tweepy not installed"
             elif not self.bearer_token:
                 self.last_error = "No bearer token"
+
+    def _test_api_connection(self):
+        """Test API connection with minimal request."""
+        try:
+            # Try a minimal search
+            result = self.client.search_recent_tweets(
+                query="test",
+                max_results=10
+            )
+            self.api_available = True
+        except Exception as e:
+            error_str = str(e)
+            self.last_error = error_str
+            if "402" in error_str or "Payment Required" in error_str or "credits" in error_str.lower():
+                self.credits_exhausted = True
+                self.last_error = "Twitter API requires payment (no credits available)"
+            self.api_available = False
 
         # Cache
         self._cache = {}
@@ -288,6 +307,7 @@ class TwitterCollector:
             'api_available': self.api_available,
             'has_tweepy': HAS_TWEEPY,
             'has_token': bool(self.bearer_token),
+            'credits_exhausted': getattr(self, 'credits_exhausted', False),
             'last_error': self.last_error,
             'cached_queries': list(self._cache.keys()),
             'demo_mode': not self.api_available and self.use_demo_on_failure
